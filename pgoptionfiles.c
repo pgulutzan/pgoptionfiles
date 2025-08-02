@@ -1,8 +1,8 @@
 /*
   pgoptionfiles.c --  To get a list of the option files that MySQL or MariaDB Connector C actually uses
 
-   Version: 0.2.0
-   Last modified: July 31 2025
+   Version: 0.3.0
+   Last modified: August 1 2025
 
   Copyright (c) 2025 by Peter Gulutzan. All rights reserved.
 
@@ -204,6 +204,24 @@ void pgoptionfiles_tracee(const char *argv1)
   /* skip mysql_close() */
   exit(EXIT_SUCCESS);
 }
+
+/*
+  Pass: the message for an error in tracee()
+  Do: a fake fopen() -- all tracee messages start with "Error: ", the tracer looks for openat that starts with "Error: " 
+      + exit.
+  Since real files don't have names with this format, EXIT_FAILURE is certain. But EXIT_SUCCESS is harmless.
+*/
+void pgoptionfiles_tracee_error(const char * message)
+{
+#if (PGOPTIONFILES_TRACEE_ONLY == 1)
+  printf("%s\n", message);
+  exit(EXIT_FAILURE);
+#else
+  if ((fopen(message, "r") == NULL) || (access(message, F_OK) == 0)) exit(EXIT_FAILURE);
+  exit(EXIT_SUCCESS);
+#endif
+}
+
 #pragma GCC pop_options
 
 /*
@@ -211,24 +229,30 @@ void pgoptionfiles_tracee(const char *argv1)
 */
 
 /*
-  These are the three syscalls that are monitored.
+  These are the five syscalls that are monitored.
   Connector C only uses fopen() so 257 openat, but in case that changes we're ready for 2 open.
-  Connector C also uses 21 access for default files, but not necessarily for !include files.
+  Connector C also uses 21 access or 4 stat for default files, but not necessarily for !include files.
+  Nobody uses 2 open or 6 lstat at this time but they're monitored in case that changes.
+  There's no checking for fstat (which occurs but seems redundant) or for statat.
 */
 #define SYSCALL_OPEN 2
+#define SYSCALL_STAT 4
+#define SYSCALL_LSTAT 6
 #define SYSCALL_ACCESS 21
 #define SYSCALL_OPENAT 257
+
 
 #if (PGOPTIONFILES_TRACEE_ONLY == 0)
 int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 {
-  struct ptrace_syscall_info psi;
-  size_t psi_size= sizeof(psi);
   int status= 0;
   int retcode= 0;
-  for (int i= 0; ; ++i)
+
+  /* In this loop, odd trace_number is entry and even trace_number (other than 0) is exit), we worry only about entry */
+  /* (They alternate because there are no other choices because the seccomp flag is off.) */
+  for (unsigned int trace_number= 0; ; ++trace_number)
   {
-    if (i > 0)
+    if (trace_number > 0)
     {
       if (ptrace((enum __ptrace_request)PTRACE_SYSCALL, pid, NULL, NULL) < 0)
       {
@@ -265,7 +289,7 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
       break;
     }
     if (WIFEXITED(status)) { retcode= 0; break; }
-    if (i == 0)
+    if (trace_number == 0)
     {
       if (!WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) {
         kill(pid, SIGKILL);
@@ -273,29 +297,31 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
         retcode= -3;
         break;
       }
-      if (ptrace((enum __ptrace_request)PTRACE_SETOPTIONS, pid, 0, PTRACE_O_TRACESYSGOOD) < 0)
-      {
-        strcat(error_list, "Error: ptrace(SETOPTIONS failed.");
-        retcode= -4;
-        break;
-      }
       continue; /* so next thing that happens with be PTRACE_SYSCALL */
     }
-    if (ptrace((enum __ptrace_request)PTRACE_GET_SYSCALL_INFO, pid, (void*)psi_size, &psi) < 0)
+    if ((trace_number %2) == 1) /* like if ( ptrace_syscall_info op == PTRACE_SYSCALL_INFO_ENTRY) */
     {
-      retcode= -5;
-      break;
-    }
-    if (psi.op == PTRACE_SYSCALL_INFO_ENTRY)
-    {
-      if ((psi.entry.nr == SYSCALL_OPENAT) || (psi.entry.nr == SYSCALL_OPEN) || (psi.entry.nr == SYSCALL_ACCESS))
+      /* orig_rax or orig_eax should have the number of the system call, like  ptrace_syscall_info entry.nr */
+      struct user_regs_struct registers;
+      ptrace((enum __ptrace_request)PTRACE_GETREGS, pid, 0, &registers);
+#ifdef __x86_64__
+      size_t psi_entry_nr= registers.orig_rax;
+#else
+      size_t psi_entry_nr= registers.orig_eax;
+#endif
+      if ((psi_entry_nr == SYSCALL_OPENAT)
+       || (psi_entry_nr == SYSCALL_ACCESS)
+       || (psi_entry_nr == SYSCALL_STAT)
+       || (psi_entry_nr == SYSCALL_OPEN)
+       || (psi_entry_nr == SYSCALL_LSTAT))
       {
-        char file_name[PATH_MAX]; file_name[0]= PGOPTIONFILES_DELIMITER;
+        char file_name[PATH_MAX];
+        file_name[0]= PGOPTIONFILES_DELIMITER;
         int copy_result;
-        if ((psi.entry.nr == SYSCALL_OPEN) || (psi.entry.nr == SYSCALL_ACCESS))
-          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) psi.entry.args[0]);
-        else /* SYSCALL_OPENAT */
-          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) psi.entry.args[1]);
+        if (psi_entry_nr == SYSCALL_OPENAT)
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rsi); /* like entry.args[1]) */
+        else /* SYSCALL_OPEN) | SYSCALL_ACCESS) ||  SYSCALL_STAT | SYSCALL_LSTAT */
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rdi); /* like entry.args[0] */
         if (copy_result > 0)
         {
           /* if tracee has an error it calls fopen("Error: ...", "r"); */
@@ -309,14 +335,12 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
           int file_name_length= strlen(file_name);
 #if (PGOPTIONFILES_READ == 0)
           /* Change filename's register to point to the trailing '\0' so the pass is empty string causing ENOENT. */
-          struct user_regs_struct registers;
-          ptrace((enum __ptrace_request)PTRACE_GETREGS, pid, 0, &registers);
 #ifdef __x86_64__
-          if (psi.entry.nr == SYSCALL_OPENAT) registers.rsi+= file_name_length;
-          else /* SYSCALL_OPEN or SYSCALL_ACCESS */ registers.rdi+= file_name_length;
+          if (psi_entry_nr == SYSCALL_OPENAT) registers.rsi+= file_name_length;
+          else /* SYSCALL_OPEN | SYSCALL_ACCESS | SYSCALL_STAT | SYSCALL_LSTAT */ registers.rdi+= file_name_length;
 #else
-          if (psi.entry.nr == SYSCALL_OPENAT) registers.esi+= file_name_length;
-          else /* SYSCALL_OPEN or SYSCALL_ACCESS */ registers.edi+= file_name_length;
+          if (psi_entry_nr == SYSCALL_OPENAT) registers.esi+= file_name_length;
+          else /* SYSCALL_OPEN or SYSCALL_ACCESS of SYSCALL_STAT */ registers.edi+= file_name_length;
 #endif
           ptrace((enum __ptrace_request)PTRACE_SETREGS, pid, 0, &registers);
 #endif
@@ -387,20 +411,3 @@ int pgoptionfiles_copy_from_tracee(pid_t tracee_pid, char *dest, const char *src
   return dest_offset;
 }
 #endif
-
-/*
-  Pass: the message for an error in tracee()
-  Do: a fake fopen() -- all tracee messages start with "Error: ", the tracer looks for openat that starts with "Error: " 
-      + exit.
-  Since real files don't have names with this format, EXIT_FAILURE is certain. But EXIT_SUCCESS is harmless.
-*/
-void pgoptionfiles_tracee_error(const char * message)
-{
-#if (PGOPTIONFILES_TRACEE_ONLY == 1)
-  printf("%s\n", message);
-  exit(EXIT_FAILURE);
-#else
-  if ((fopen(message, "r") == NULL) || (access(message, F_OK) == 0)) exit(EXIT_FAILURE);
-  exit(EXIT_SUCCESS);
-#endif
-}

@@ -53,12 +53,12 @@
 
 #if (PGOPTIONFILES_TRACEE_ONLY == 0)
 #include <sys/ptrace.h>   /* This defines some PTRACE_ items as enum */
-#include <linux/ptrace.h> /* This defines same PTRACE_ items as int, that's why there are casts to enum */
+//#include <linux/ptrace.h> /* This defines same PTRACE_ items as int, that's why there are casts to enum */
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <errno.h>
 #include <stdint.h>
-#include <sys/types.h>
+//#include <sys/types.h>
 #endif
 #include <stdlib.h>
 #include <stdio.h>
