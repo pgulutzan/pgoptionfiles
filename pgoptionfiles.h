@@ -59,6 +59,7 @@
 #include <errno.h>
 #include <stdint.h>
 //#include <sys/types.h>
+#include <sys/syscall.h> /* This should have SYS_lstat etc. */
 #endif
 #include <stdlib.h>
 #include <stdio.h>

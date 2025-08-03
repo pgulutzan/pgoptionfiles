@@ -1,8 +1,8 @@
 /*
   pgoptionfiles.c --  To get a list of the option files that MySQL or MariaDB Connector C actually uses
 
-   Version: 0.3.0
-   Last modified: August 1 2025
+   Version: 0.4.0
+   Last modified: August 3 2025
 
   Copyright (c) 2025 by Peter Gulutzan. All rights reserved.
 
@@ -45,7 +45,7 @@
       /home/pgulutzan/.my.cnf
     The list includes default option files which the connector opened, i.e. fopen(filename) succeeded.
     The list includes files which the connector would have opened but couldn't, i.e. access(filename) failed.
-    The list includes files which were !included in other if and only if a non-default build option is used.
+    The list includes files which were !included in other files if and only if a non-default build option is used.
     The list does not include duplicates.
     If errors occur, a message beginning with "Error: " will appear after "(pgoptionfiles)" on the same line.
   HOW TO BUILD IT
@@ -231,15 +231,15 @@ void pgoptionfiles_tracee_error(const char * message)
 /*
   These are the five syscalls that are monitored.
   Connector C only uses fopen() so 257 openat, but in case that changes we're ready for 2 open.
-  Connector C also uses 21 access or 4 stat for default files, but not necessarily for !include files.
-  Nobody uses 2 open or 6 lstat at this time but they're monitored in case that changes.
+  Connector C also uses 21 access or 4 stat or 6 lstat for default files, but not necessarily for !include files.
   There's no checking for fstat (which occurs but seems redundant) or for statat.
+  The actual #defines are brought in by #include <sys/syscalls.h> in pgoptionfiles.h.
+#define SYS_open 2
+#define SYS_stat 4
+#define SYS_lstat 6
+#define SYS_access 21
+#define SYS_openat 257
 */
-#define SYSCALL_OPEN 2
-#define SYSCALL_STAT 4
-#define SYSCALL_LSTAT 6
-#define SYSCALL_ACCESS 21
-#define SYSCALL_OPENAT 257
 
 
 #if (PGOPTIONFILES_TRACEE_ONLY == 0)
@@ -309,19 +309,26 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 #else
       size_t psi_entry_nr= registers.orig_eax;
 #endif
-      if ((psi_entry_nr == SYSCALL_OPENAT)
-       || (psi_entry_nr == SYSCALL_ACCESS)
-       || (psi_entry_nr == SYSCALL_STAT)
-       || (psi_entry_nr == SYSCALL_OPEN)
-       || (psi_entry_nr == SYSCALL_LSTAT))
+      if ((psi_entry_nr == SYS_openat)
+       || (psi_entry_nr == SYS_access)
+       || (psi_entry_nr == SYS_stat)
+       || (psi_entry_nr == SYS_open)
+       || (psi_entry_nr == SYS_lstat))
       {
         char file_name[PATH_MAX];
         file_name[0]= PGOPTIONFILES_DELIMITER;
         int copy_result;
-        if (psi_entry_nr == SYSCALL_OPENAT)
+#ifdef __x86_64__
+        if (psi_entry_nr == SYS_openat)
           copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rsi); /* like entry.args[1]) */
-        else /* SYSCALL_OPEN) | SYSCALL_ACCESS) ||  SYSCALL_STAT | SYSCALL_LSTAT */
+        else /* SYS_open) | SYS_access) ||  SYS_stat | SYS_lstat */
           copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rdi); /* like entry.args[0] */
+#else
+        if (psi_entry_nr == SYS_openat)
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ecx); /* like entry.args[1]) */
+        else /* SYS_open) | SYS_access) ||  SYS_stat | SYS_lstat */
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ebx); /* like entry.args[0] */
+#endif
         if (copy_result > 0)
         {
           /* if tracee has an error it calls fopen("Error: ...", "r"); */
@@ -336,11 +343,11 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 #if (PGOPTIONFILES_READ == 0)
           /* Change filename's register to point to the trailing '\0' so the pass is empty string causing ENOENT. */
 #ifdef __x86_64__
-          if (psi_entry_nr == SYSCALL_OPENAT) registers.rsi+= file_name_length;
-          else /* SYSCALL_OPEN | SYSCALL_ACCESS | SYSCALL_STAT | SYSCALL_LSTAT */ registers.rdi+= file_name_length;
+          if (psi_entry_nr == SYS_openat) registers.rsi+= file_name_length;
+          else /* SYS_open | SYS_access | SYS_stat | SYS_lstat */ registers.rdi+= file_name_length;
 #else
-          if (psi_entry_nr == SYSCALL_OPENAT) registers.esi+= file_name_length;
-          else /* SYSCALL_OPEN or SYSCALL_ACCESS of SYSCALL_STAT */ registers.edi+= file_name_length;
+          if (psi_entry_nr == SYS_openat) registers.ecx+= file_name_length;
+          else /* SYS_open | SYS_access | SYS_stat | SYS_lstat */ registers.ebx+= file_name_length;
 #endif
           ptrace((enum __ptrace_request)PTRACE_SETREGS, pid, 0, &registers);
 #endif
