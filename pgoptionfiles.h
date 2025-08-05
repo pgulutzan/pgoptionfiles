@@ -71,7 +71,7 @@
 void pgoptionfiles_tracee(const char *);
 int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list);
 int pgoptionfiles_copy_from_tracee(pid_t tracee_pid, char *dest, const char *src);
-void pgoptionfiles_tracee_error(const char *);
+void pgoptionfiles_tracee_error_or_message(const char *);
 
 #if (PGOPTIONFILES_INCLUDE_MYSQL == 1)
 #include <mysql.h>
@@ -82,6 +82,20 @@ typedef struct MYSQL {
 enum mysql_option {
   MYSQL_READ_DEFAULT_GROUP = 5
 };
+#endif
+
+#if (PGOPTIONFILES_FREEBSD == 1)
+/*
+  Say 1 to indicate it's for FreeBSD rather than Linux.
+  Not done. But perhaps it could be made to work ...
+  Some equivalencies are already established and might be okay in Linux too:
+  PT_TRACE_ME = PTRACE_TRACEME, PT_READ_D = PTRACE_PEEKDATA, PT_SYSCALL = PTRACE_SYSCALL,
+  PT_GETREGS = PTRACE_GETREGS, PT_SETREGS = PTRACE_SETREGS.
+  ... But you'll need to set flags for PTRACE_SCE + PTRACE_SCX (or the combination which
+      is PTRACE_SYSCALL although that has a different meaning in Linux) which I guess is
+      done with PT_SET_EVENT_MASK
+  https://man.freebsd.org/cgi/man.cgi?query=ptrace
+*/
 #endif
 
 #endif
