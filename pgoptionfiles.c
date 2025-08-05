@@ -253,13 +253,14 @@ void pgoptionfiles_tracee_error_or_message(const char * message)
   These are the five syscalls that are monitored.
   Connector C only uses fopen() so 257 openat, but in case that changes we're ready for 2 open.
   Connector C also uses 21 access or 4 stat or 6 lstat for default files, but not necessarily for !include files.
-  There's no checking for fstat (which occurs but seems redundant) or for statat.
+  There's no checking for fstat (which occurs but seems redundant).
   The actual #defines are brought in by #include <sys/syscalls.h> in pgoptionfiles.h.
 #define SYS_open 2
 #define SYS_stat 4
 #define SYS_lstat 6
 #define SYS_access 21
 #define SYS_openat 257
+#define SYS_newfstatat 262
 */
 
 
@@ -269,7 +270,6 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
   int status= 0;
   int retcode= 0;
   int is_connector_message_seen= 0;
-
   /* In this loop, odd trace_number is entry and even trace_number (other than 0) is exit), we worry only about entry */
   /* (They alternate because there are no other choices because the seccomp flag is off.) */
   for (unsigned int trace_number= 0; ; ++trace_number)
@@ -335,18 +335,19 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
        || (psi_entry_nr == SYS_access)
        || (psi_entry_nr == SYS_stat)
        || (psi_entry_nr == SYS_open)
-       || (psi_entry_nr == SYS_lstat))
+       || (psi_entry_nr == SYS_lstat)
+       || (psi_entry_nr == SYS_newfstatat))
       {
         char file_name[PATH_MAX];
         file_name[0]= PGOPTIONFILES_DELIMITER;
         int copy_result;
 #ifdef __x86_64__
-        if (psi_entry_nr == SYS_openat)
+        if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat))
           copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rsi); /* like entry.args[1]) */
         else /* SYS_open) | SYS_access) ||  SYS_stat | SYS_lstat */
           copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rdi); /* like entry.args[0] */
 #else
-        if (psi_entry_nr == SYS_openat)
+        if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat))
           copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ecx); /* like entry.args[1]) */
         else /* SYS_open) | SYS_access) ||  SYS_stat | SYS_lstat */
           copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ebx); /* like entry.args[0] */
@@ -374,10 +375,10 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 #if (PGOPTIONFILES_READ == 0)
           /* Change filename's register to point to the trailing '\0' so the pass is empty string causing ENOENT. */
 #ifdef __x86_64__
-          if (psi_entry_nr == SYS_openat) registers.rsi+= file_name_length;
+          if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat)) registers.rsi+= file_name_length;
           else /* SYS_open | SYS_access | SYS_stat | SYS_lstat */ registers.rdi+= file_name_length;
 #else
-          if (psi_entry_nr == SYS_openat) registers.ecx+= file_name_length;
+          if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat)) registers.ecx+= file_name_length;
           else /* SYS_open | SYS_access | SYS_stat | SYS_lstat */ registers.ebx+= file_name_length;
 #endif
           ptrace(PTRACE_SETREGS, pid, 0, &registers);
