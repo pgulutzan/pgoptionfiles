@@ -72,6 +72,7 @@ void pgoptionfiles_tracee(const char *);
 int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list);
 int pgoptionfiles_copy_from_tracee(pid_t tracee_pid, char *dest, const char *src);
 void pgoptionfiles_tracee_error_or_message(const char *);
+int pgoptionfiles_tracer_arg_number(size_t psi_entry_nr);
 
 #if (PGOPTIONFILES_INCLUDE_MYSQL == 1)
 #include <mysql.h>

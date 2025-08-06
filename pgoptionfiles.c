@@ -1,8 +1,8 @@
 /*
   pgoptionfiles.c --  To get a list of the option files that MySQL or MariaDB Connector C actually uses
 
-   Version: 0.5.0
-   Last modified: August 5 2025
+   Version: 0.6.0
+   Last modified: August 6 2025
 
   Copyright (c) 2025 by Peter Gulutzan. All rights reserved.
 
@@ -65,6 +65,7 @@
     https://becomingahacker.org/a-comparative-overview-of-selinux-apparmor-yama-tomoyo-linux-and-smack-bf7f0a1789cf
     ... You can see by looking at this pgoptionfile.c code that nothing crooked goes on, it just sees syscalls
     ... of an open-source library.
+    It can fail if a future Linux version adds new syscalls with relevant "const char *filename" arguments.
     It can fail if the connector code changes, making some necessary assumptions invalid ...
       We assume that mysql_options() processing will not stop when an error e.g. bad syntax happens,
       If MySQL or MariaDB changes this behaviour then you won't get a full list but you'll get to see
@@ -89,7 +90,7 @@
     i.e. MYSQL struct and MYSQL_READ_DEFAULT_GROUP enum, can easily be specified in pgoptionfiles.h.
     However, anyone worried that Oracle will do an incompatible-ABI change may want building to require "#include <mysql.h>".
     If so: Ensure that either MySQL's or MariaDB's mysql.h is on the include path
-    (it doesn't matter which, since MySQL and MariaDB define the two items similarly), e.g. on the developer's macine:
+    (it doesn't matter which, since MySQL and MariaDB define the two items similarly), e.g. on the developer's machine:
       for MySQL 8.3: export C_INCLUDE_PATH=/home/pgulutzan/mysql-8.3.0-linux-glibc2.28-x86_64/include
       for MariaDB 3.4.3: export C_INCLUDE_PATH=/home/pgulutzan/connector-c-3.4.3/usr/local/include/mariadb
     then say
@@ -249,21 +250,6 @@ void pgoptionfiles_tracee_error_or_message(const char * message)
   ******************* TRACER ***************
 */
 
-/*
-  These are the five syscalls that are monitored.
-  Connector C only uses fopen() so 257 openat, but in case that changes we're ready for 2 open.
-  Connector C also uses 21 access or 4 stat or 6 lstat for default files, but not necessarily for !include files.
-  There's no checking for fstat (which occurs but seems redundant).
-  The actual #defines are brought in by #include <sys/syscalls.h> in pgoptionfiles.h.
-#define SYS_open 2
-#define SYS_stat 4
-#define SYS_lstat 6
-#define SYS_access 21
-#define SYS_openat 257
-#define SYS_newfstatat 262
-*/
-
-
 #if (PGOPTIONFILES_TRACEE_ONLY == 0)
 int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 {
@@ -331,26 +317,22 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 #else
       size_t psi_entry_nr= registers.orig_eax;
 #endif
-      if ((psi_entry_nr == SYS_openat)
-       || (psi_entry_nr == SYS_access)
-       || (psi_entry_nr == SYS_stat)
-       || (psi_entry_nr == SYS_open)
-       || (psi_entry_nr == SYS_lstat)
-       || (psi_entry_nr == SYS_newfstatat))
+      int arg_number= pgoptionfiles_tracer_arg_number(psi_entry_nr);
+      if (arg_number >= 0) /* i.e. if psi_entry_nr has relevant-looking const char *filename arg0 or arg1 */
       {
         char file_name[PATH_MAX];
         file_name[0]= PGOPTIONFILES_DELIMITER;
         int copy_result;
 #ifdef __x86_64__
-        if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat))
-          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rsi); /* like entry.args[1]) */
-        else /* SYS_open) | SYS_access) ||  SYS_stat | SYS_lstat */
-          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rdi); /* like entry.args[0] */
+        if (arg_number == 1)
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rsi); /* arg1 */
+        else
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.rdi); /* arg0 */
 #else
-        if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat))
-          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ecx); /* like entry.args[1]) */
-        else /* SYS_open) | SYS_access) ||  SYS_stat | SYS_lstat */
-          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ebx); /* like entry.args[0] */
+        if (arg_number == 1)
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ecx); /* arg1 */
+        else
+          copy_result= pgoptionfiles_copy_from_tracee(pid, file_name + 1, (const char *) registers.ebx); /* arg0 */
 #endif
         if (copy_result > 0)
         {
@@ -375,11 +357,11 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
 #if (PGOPTIONFILES_READ == 0)
           /* Change filename's register to point to the trailing '\0' so the pass is empty string causing ENOENT. */
 #ifdef __x86_64__
-          if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat)) registers.rsi+= file_name_length;
-          else /* SYS_open | SYS_access | SYS_stat | SYS_lstat */ registers.rdi+= file_name_length;
+          if (arg_number == 1) registers.rsi+= file_name_length;
+          else registers.rdi+= file_name_length;
 #else
-          if ((psi_entry_nr == SYS_openat) || (psi_entry_nr == SYS_newfstatat)) registers.ecx+= file_name_length;
-          else /* SYS_open | SYS_access | SYS_stat | SYS_lstat */ registers.ebx+= file_name_length;
+          if (arg_number == 1) registers.ecx+= file_name_length;
+          else registers.ebx+= file_name_length;
 #endif
           ptrace(PTRACE_SETREGS, pid, 0, &registers);
 #endif
@@ -410,6 +392,38 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
     }
   }
   return retcode;
+}
+
+/*
+  Pass: syscall number
+  Return: -1 not relevant, 0 filename is arg0, 1 filename is arg1
+  See https://chromium.googlesource.com/chromiumos/docs/+/master/constants/syscalls.md
+  for separate lists of 32-bit and 64-bit syscalls.
+  Care about syscalls that have a const char *filename arg and look relevant.
+  Hope that a future Linux doesn't introduce a new call that would be relevant.
+  The #define SYS_... lines are brought in by #include <sys/syscalls.h> in pgoptionfiles.h.
+*/
+int pgoptionfiles_tracer_arg_number(size_t psi_entry_nr)
+{
+  if ((psi_entry_nr == SYS_open)      /* both 32-bit and 64-bit, arg0 */
+   || (psi_entry_nr == SYS_access)
+   || (psi_entry_nr == SYS_lstat)
+   || (psi_entry_nr == SYS_stat))
+    return 0;
+  if ((psi_entry_nr == SYS_openat)    /* both 32-bit and 64-bit, arg1 */
+   || (psi_entry_nr == SYS_faccessat))
+    return 1;
+#ifdef __x86_64__
+  if (psi_entry_nr == SYS_newfstatat) /* 64-bit, arg1 */
+    return 1;
+#else
+  if ((psi_entry_nr == SYS_stat64)    /* 32-bit, arg0 */
+   || (psi_entry_nr == SYS_lstat64))
+    return 0;
+  if (psi_entry_nr == SYS_fstatat64)  /* 32-bit, arg1 */
+    return 1;
+#endif
+  return -1;                          /* apparently not relevant */
 }
 #endif
 
