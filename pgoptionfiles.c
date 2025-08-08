@@ -218,6 +218,7 @@ void pgoptionfiles_tracee(const char *argv1)
   if (t__mysql_real_connect(mysql, "localhost", "","", "", 3309, NULL, 0) != 0)
     pgoptionfiles_tracee_error_or_message("Error: mysql_real_connect() succeeded -- this is probably harmless.");
   /* skip mysql_close() */
+  pgoptionfiles_tracee_error_or_message("(Connector exit");
   exit(EXIT_SUCCESS);
 }
 
@@ -341,6 +342,11 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
           {
             strcat(error_list, file_name + 1);
             retcode= -6;
+            break;
+          }
+          if (strncmp(file_name + 1, "(Connector exit", sizeof("(Connector exit") - 1) == 0)
+          {
+            kill(pid, SIGKILL); /* This is drastic, a better dezombifier is being worked on. */
             break;
           }
           if (strncmp(file_name + 1, "(Connector ", sizeof("(Connector ") - 1) == 0)
