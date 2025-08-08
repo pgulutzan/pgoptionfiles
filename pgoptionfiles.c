@@ -1,8 +1,8 @@
 /*
   pgoptionfiles.c --  To get a list of the option files that MySQL or MariaDB Connector C actually uses
 
-   Version: 0.6.0
-   Last modified: August 6 2025
+   Version: 0.7.0
+   Last modified: August 7 2025
 
   Copyright (c) 2025 by Peter Gulutzan. All rights reserved.
 
@@ -59,7 +59,7 @@
     ... Result will be either an error message or a list of the option files that the connector read or tried to read
   WHAT IT CALLS
     The library functions are mysql_init(), mysql_options(...MYSQL_READ_DEFAULT_GROUP ...),
-    mysql_real_connect(... NULL ...).
+    mysql_real_connect(... NULL ...), mysql_close().
   HOW IT CAN FAIL
     It can fail if for security ptrace() is disabled or limited for your system or for your privilege set.
     https://becomingahacker.org/a-comparative-overview-of-selinux-apparmor-yama-tomoyo-linux-and-smack-bf7f0a1789cf
@@ -101,7 +101,7 @@
     strace 2>&1 ./pgoptionfiles library-name | grep my.cnf
     to check whether it displays the same file names.
   USE IN OCELOTGUI
-    The intent is to use something like this in ocelotgui:
+    The intent is to use something like this in https://github.com/ocelot-inc/ocelotgui
       FILE *fp= popen(./pgoptionfiles library_found_with_pgfindlib.so", "r");
       {
         while (fgets(file_name, sizeof(file_name), fp) != NULL)
@@ -161,7 +161,6 @@ int main(int argc, char **argv)
 /*
   ******************* TRACEE ***************
   Turn optimizing off because tracer might look for specific signals that an optimizer might decide are unnecessary.
-  Turn warning off for -Wno-unused-result by letting fopen return a value.
 */
 #pragma GCC push_options
 #pragma GCC optimize ("O0")
@@ -171,28 +170,43 @@ void pgoptionfiles_tracee(const char *argv1)
 #if (PGOPTIONFILES_TRACEE_ONLY == 0)
   ptrace(PTRACE_TRACEME, 0, NULL, NULL);
   if (raise(SIGSTOP))
+  {
     pgoptionfiles_tracee_error_or_message("Error: raise sigstop failed.");
+    goto error_exit_2;
+  }
 #endif
   void *dlopen_handle= dlopen(argv1, RTLD_LAZY); /* argv[1] should be library file name */
   if (dlopen_handle == NULL)
+  {
     pgoptionfiles_tracee_error_or_message("Error: dlopen() failed --does library exist and is it Connector C?");
+    goto error_exit_2;
+  }
   typedef MYSQL*          (*tmysql_init)         (MYSQL *);
   tmysql_init t__mysql_init;
   t__mysql_init= (tmysql_init) dlsym(dlopen_handle, "mysql_init");
   if (dlerror() != 0)
+  {
     pgoptionfiles_tracee_error_or_message("Error: dlsym() failed for mysql_init() -- is this a Connector C library?");
+    goto error_exit_1;
+  }
 
   typedef const char*     (*tmysql_get_client_info) (void);
   tmysql_get_client_info t__mysql_get_client_info;
   t__mysql_get_client_info= (tmysql_get_client_info) dlsym(dlopen_handle, "mysql_get_client_info");
   if (dlerror() != 0)
+  {
     pgoptionfiles_tracee_error_or_message("Error: dlsym() failed for mysql_get_client_info() -- is this a Connector C library?");
+    goto error_exit_1;
+  }
 
   typedef int             (*tmysql_options)      (MYSQL *, enum mysql_option, const void *);
   tmysql_options t__mysql_options;
   t__mysql_options= (tmysql_options) dlsym(dlopen_handle, "mysql_options");
   if (dlerror() != 0)
+  {
     pgoptionfiles_tracee_error_or_message("Error: dlsym() failed for mysql_options() -- is this a Connector C library?");
+    goto error_exit_1;
+  }
 
   typedef MYSQL*          (*tmysql_real_connect) (MYSQL *, const char *,
                                               const char *, const char *, const char *,
@@ -200,48 +214,71 @@ void pgoptionfiles_tracee(const char *argv1)
   tmysql_real_connect t__mysql_real_connect;
   t__mysql_real_connect= (tmysql_real_connect) dlsym(dlopen_handle, "mysql_real_connect");
   if (dlerror() != 0)
+  {
     pgoptionfiles_tracee_error_or_message("Error: dlsym() failed for mysql_real_connect() -- is this a Connector C library?");
+    goto error_exit_1;
+  }
+
+  typedef void            (*tmysql_close)        (MYSQL *);
+  tmysql_close t__mysql_close;
+  t__mysql_close= (tmysql_close) dlsym(dlopen_handle, "mysql_close");
+  if (dlerror() != 0)
+  {
+    pgoptionfiles_tracee_error_or_message("Error: dlsym() failed for mysql_close() -- is this a Connector C library?");
+    goto error_exit_1;
+  }
+
   MYSQL *mysql= NULL;
   mysql= t__mysql_init(mysql);
   if (!mysql)
+  {
     pgoptionfiles_tracee_error_or_message("Error: mysql_init() failed -- out of memory?");
+    goto error_exit_1;
+  }
   /* Let tracee printf or access the Connector C version. */
   {
     const char *client_info= t__mysql_get_client_info();
-    sprintf(connector_c_version, "(Connector C version %s)", client_info);
+    if (client_info != NULL) sprintf(connector_c_version, "(Connector C version %s)", client_info);
+    else strcpy(connector_c_version, "((Connector C version unknown)");
     pgoptionfiles_tracee_error_or_message(connector_c_version);
   }
   /* This tells the connector to try to open all option files, group name doesn't matter */
   if (t__mysql_options(mysql, MYSQL_READ_DEFAULT_GROUP, "client") == 1)
+  {
     pgoptionfiles_tracee_error_or_message("Error: mysql_options() failed -- bad syntax in an option file?");
+    goto error_exit_0;
+  }
   /* The actual reading takes place during mysql_real_connect, failure doesn't matter */
   if (t__mysql_real_connect(mysql, "localhost", "","", "", 3309, NULL, 0) != 0)
     pgoptionfiles_tracee_error_or_message("Error: mysql_real_connect() succeeded -- this is probably harmless.");
-  /* skip mysql_close() */
+  t__mysql_close(mysql);
+  dlclose(dlopen_handle);
   pgoptionfiles_tracee_error_or_message("(Connector exit");
   exit(EXIT_SUCCESS);
+error_exit_0:
+  t__mysql_close(mysql);
+error_exit_1:
+  dlclose(dlopen_handle);
+error_exit_2:
+  exit(EXIT_FAILURE);
 }
 
 /*
   Pass: the message for an error in tracee()
-  Do: a fake fopen() -- all tracee messages start with "Error: " or "(Connector ", the tracer looks for openat that starts with such signals 
-      + exit.
+  Do: a fake fopen() -- all tracee messages start with "Error: " or "(Connector ",
+  the tracer looks for openat that starts with such signals 
+
   Doing all messages via fake accesses will guarantee that the tracer sees all (messages + real accesses) in sequence.
-  Since real files don't have names with this format, EXIT_FAILURE is certain. But EXIT_SUCCESS is harmless.
-  Complexity added so that the compiler won't warn about unused results.
+  Since real files don't have names with this format, failure is certain. But success is harmless.
+  Turn warning off for -Wno-unused-result by letting fopen return a value.
 */
 void pgoptionfiles_tracee_error_or_message(const char * message)
 {
 #if (PGOPTIONFILES_TRACEE_ONLY == 1)
   printf("%s\n", message);
-  if (strstr(message, "Error: ") == message) exit(EXIT_FAILURE);
 #else
-  if ((fopen(message, "r") == NULL) || (access(message, F_OK) == 0))
-  {
-    if (strstr(message, "Error: ") == message) exit(EXIT_FAILURE);
-    return;
-  }
-  exit(EXIT_SUCCESS);
+  FILE *fp= fopen(message, "r");
+  if (fp != NULL) fclose(fp);
 #endif
 }
 
@@ -346,21 +383,23 @@ int pgoptionfiles_tracer(pid_t pid, char *file_names_list, char *error_list)
           }
           if (strncmp(file_name + 1, "(Connector exit", sizeof("(Connector exit") - 1) == 0)
           {
-            kill(pid, SIGKILL); /* This is drastic, a better dezombifier is being worked on. */
-            break;
+            is_connector_message_seen= 0;
+            continue;
           }
-          if (strncmp(file_name + 1, "(Connector ", sizeof("(Connector ") - 1) == 0)
+          else if (strncmp(file_name + 1, "(Connector ", sizeof("(Connector ") - 1) == 0)
           {
             strcat(error_list, file_name + 1);
             is_connector_message_seen= 1;
             continue;
           }
           /* option files normally are named my.cnf or .my.cnf but I've seen mysql.cnf and even mysqldump.cnf + don't forget .mylogin.cnf */
-          /* also let's not ignore non-configuration files like openssl.cnf, and perhaps !included files don't need to end with .cnf */
+          /* also let's not ignore non-configuration files like openssl.cnf */
           /* but until we've seen "(Connector ..." we can assume any file accesses are for tracee maintenance dlopen etc. so skip them */
           if (is_connector_message_seen == 0) continue;
           int file_name_length= strlen(file_name);
 #if (PGOPTIONFILES_READ == 0)
+          /* Default option files will end with ".cnf" although !include files might not */
+          if ((file_name_length > 4) && (strcmp(file_name + file_name_length - 4, ".cnf") != 0)) continue;
           /* Change filename's register to point to the trailing '\0' so the pass is empty string causing ENOENT. */
 #ifdef __x86_64__
           if (arg_number == 1) registers.rsi+= file_name_length;
