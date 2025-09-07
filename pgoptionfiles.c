@@ -164,6 +164,8 @@ int main(int argc, char **argv)
 */
 #pragma GCC push_options
 #pragma GCC optimize ("O0")
+#pragma GCC diagnostic ignored "-Wpedantic"
+
 void pgoptionfiles_tracee(const char *argv1)
 {
   char connector_c_version[256];
