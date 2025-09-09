@@ -1,8 +1,8 @@
 /*
   pgoptionfiles.c --  To get a list of the option files that MySQL or MariaDB Connector C actually uses
 
-   Version: 0.7.0
-   Last modified: August 7 2025
+   Version: 1.0.0
+   Last modified: September 10 2025
 
   Copyright (c) 2025 by Peter Gulutzan. All rights reserved.
 
@@ -20,7 +20,7 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 /*
-  Package: https://github.com/pgulutzan/pgoptionfiles, maybe https://github.com/ocelot-inc/ocelotgui later
+  Package: https://github.com/pgulutzan/pgoptionfiles, or https://github.com/ocelot-inc/ocelotgui 2.6
 */
 
 /*
@@ -101,8 +101,8 @@
     strace 2>&1 ./pgoptionfiles library-name | grep my.cnf
     to check whether it displays the same file names.
   USE IN OCELOTGUI
-    The intent is to use something like this in https://github.com/ocelot-inc/ocelotgui
-      FILE *fp= popen(./pgoptionfiles library_found_with_pgfindlib.so", "r");
+    The intent for version 2.6 is to use something like this in https://github.com/ocelot-inc/ocelotgui
+      FILE *fp= popen(ApplicationDirPath/pgoptionfiles 2>&1 library_found_with_pgfindlib.so", "r");
       {
         while (fgets(file_name, sizeof(file_name), fp) != NULL)
         {
