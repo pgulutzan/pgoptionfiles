@@ -1,6 +1,7 @@
 /*
   pgoptionfiles.h - the file that's #included in pgoptionfiles.c and anything that calls it.
-
+*/
+/*
   Copyright (c) 2025 by Peter Gulutzan. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
